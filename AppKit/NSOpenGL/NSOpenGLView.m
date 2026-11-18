@@ -66,6 +66,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 - (void) dealloc {
     [_pixelFormat release];
     [_context release];
+    NS_EXTRA_FREE(NSOpenGLView, self);
     [super dealloc];
 }
 
@@ -78,7 +79,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
         _context = [[NSOpenGLContext alloc] initWithFormat: _pixelFormat
                                               shareContext: nil];
         [_context setView: self];
-        _needsReshape = YES;
+        NS_EXTRA(NSOpenGLView, self)->_needsReshape = YES;
     }
 
     return _context;
@@ -101,7 +102,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
     [_context release];
     _context = context;
     [_context setView: self];
-    _needsReshape = YES;
+    NS_EXTRA(NSOpenGLView, self)->_needsReshape = YES;
 }
 
 - (void) update {
@@ -140,9 +141,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
     [_context setView: self];
     [context makeCurrentContext];
 
-    if (_needsReshape) {
+    if (NS_EXTRA(NSOpenGLView, self)->_needsReshape) {
         [self reshape];
-        _needsReshape = NO;
+        NS_EXTRA(NSOpenGLView, self)->_needsReshape = NO;
     }
 }
 
@@ -168,7 +169,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
 - (void) setFrameSize: (NSSize) size {
     [super setFrameSize: size];
-    _needsReshape = YES;
+    NS_EXTRA(NSOpenGLView, self)->_needsReshape = YES;
     [self update];
 }
 @end

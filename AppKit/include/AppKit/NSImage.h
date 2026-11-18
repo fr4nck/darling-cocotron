@@ -17,6 +17,7 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
+#import <AppKit/AppKitIvarLayout.h>
 #import <AppKit/NSBitmapImageRep.h>
 #import <AppKit/NSFontDescriptor.h>
 #import <AppKit/NSGraphics.h>
@@ -37,26 +38,29 @@ typedef enum {
 @interface NSImage : NSObject <NSCopying, NSCoding> {
     NSString *_name;
     NSSize _size;
-    NSRect _alignmentRect;
-    BOOL _hasCustomAlignmentRect;
-    NSColor *_backgroundColor;
-    NSMutableArray *_representations;
-    id _delegate;
-    BOOL _isFlipped;
-    BOOL _isTemplate;
-    BOOL _scalesWhenResized;
-    BOOL _matchesOnMultipleResolution;
-    BOOL _usesEPSOnResolutionMismatch;
-    BOOL _prefersColorMatch;
-    BOOL _isCachedSeparately;
-    BOOL _cacheDepthMatchesImageDepth;
-    BOOL _isDataRetained;
-    BOOL _cacheIsValid;
-    NSImageCacheMode _cacheMode;
-    NSString *_accessibilityDescription;
-    NSImageSymbolConfiguration *_symbolConfiguration;
-    NSMutableArray *_scaledRepCache;
-    id _drawingHandlerRepCache;
+    NS_LEGACY_IVAR_PAD(_NSImageReserved1, 8)
+    NS_EXTRA_IVARS_BEGIN(NSImage)
+        NSRect _alignmentRect;
+        BOOL _hasCustomAlignmentRect;
+        NSColor *_backgroundColor;
+        NSMutableArray *_representations;
+        id _delegate;
+        BOOL _isFlipped;
+        BOOL _isTemplate;
+        BOOL _scalesWhenResized;
+        BOOL _matchesOnMultipleResolution;
+        BOOL _usesEPSOnResolutionMismatch;
+        BOOL _prefersColorMatch;
+        BOOL _isCachedSeparately;
+        BOOL _cacheDepthMatchesImageDepth;
+        BOOL _isDataRetained;
+        BOOL _cacheIsValid;
+        NSImageCacheMode _cacheMode;
+        NSString *_accessibilityDescription;
+        NSImageSymbolConfiguration *_symbolConfiguration;
+        NSMutableArray *_scaledRepCache;
+        id _drawingHandlerRepCache;
+    NS_EXTRA_IVARS_END(NSImage)
 }
 
 + (NSArray *) imageFileTypes;

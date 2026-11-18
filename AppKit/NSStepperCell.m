@@ -41,8 +41,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
         _maxValue = [keyed decodeDoubleForKey: @"NSMaxValue"];
         if ([keyed containsValueForKey: @"NSValue"]) {
             // This cell prefers NSValue to NSContents
-            [_objectValue release];
-            _objectValue = [[keyed decodeObjectForKey: @"NSValue"] retain];
+            [NS_EXTRA(NSCell, self)->_objectValue release];
+            NS_EXTRA(NSCell, self)->_objectValue = [[keyed decodeObjectForKey: @"NSValue"] retain];
         }
         _valueWraps = [keyed decodeBoolForKey: @"NSValueWraps"];
         _autorepeat = [keyed decodeBoolForKey: @"NSAutorepeat"];
