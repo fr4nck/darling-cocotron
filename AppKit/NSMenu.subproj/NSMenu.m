@@ -151,6 +151,8 @@ NSString *const _NSWindowsMenuName = @"Window";
 - copyWithZone: (NSZone *) zone {
     NSMenu *copy = NSCopyObject(self, 0, zone);
 
+    copy->_identifier = [_identifier copyWithZone: zone];
+
     copy->_title = [_title copyWithZone: zone];
     copy->_name = [_name copyWithZone: zone];
     copy->_itemArray = [[NSMutableArray alloc] init];

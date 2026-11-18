@@ -434,6 +434,8 @@ NSNotificationName NSControlTintDidChangeNotification = @"NSControlTintDidChange
 - copyWithZone: (NSZone *) zone {
     NSCell *copy = NSCopyObject(self, 0, zone);
 
+    copy->_identifier = [_identifier copyWithZone: zone];
+
     copy->_font = [_font retain];
     copy->_objectValue = [_objectValue copy];
     copy->_image = [_image retain];
