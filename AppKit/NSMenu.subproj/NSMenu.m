@@ -164,6 +164,9 @@ NS_EXTRA_SYNTHESIZE_COPY(NSMenu, identifier, _identifier, NSUserInterfaceItemIde
     NSMenu *copy = NSCopyObject(self, 0, zone);
     NS_EXTRA_COPY(NSMenu, copy, self);
 
+    NS_EXTRA(NSMenu, copy)->_identifier =
+        [NS_EXTRA(NSMenu, self)->_identifier copyWithZone: zone];
+
     copy->_title = [_title copyWithZone: zone];
     NS_EXTRA(NSMenu, copy)->_name = [NS_EXTRA(NSMenu, self)->_name copyWithZone: zone];
     NS_EXTRA(NSMenu, copy)->_itemArray = [[NSMutableArray alloc] init];
