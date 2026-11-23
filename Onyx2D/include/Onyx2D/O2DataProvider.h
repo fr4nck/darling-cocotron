@@ -46,6 +46,15 @@ O2DataProviderRef
 O2DataProviderCreateWithData(void *info, const void *data, size_t size,
                              O2DataProviderReleaseDataCallback releaseCallback);
 O2DataProviderRef O2DataProviderCreateWithCFData(CFDataRef data);
+/* Callback-backed providers (CGDataProviderCreate / CGDataProviderCreateDirectAccess). Return NULL, without
+   calling releaseInfo, when the required callbacks are missing. releaseInfo is called exactly once, when the
+   provider is deallocated. */
+O2DataProviderRef O2DataProviderCreateWithSequentialCallbacks(void *info,
+        size_t (*getBytes)(void *, void *, size_t), void (*skipBytes)(void *, size_t),
+        void (*rewind)(void *), void (*releaseInfo)(void *));
+O2DataProviderRef O2DataProviderCreateWithDirectAccessCallbacks(void *info, size_t size,
+        const void *(*getBytePointer)(void *), void (*releaseBytePointer)(void *, const void *),
+        size_t (*getBytesAtOffset)(void *, void *, size_t, size_t), void (*releaseInfo)(void *));
 O2DataProviderRef O2DataProviderCreateWithURL(NSURL *url);
 O2DataProviderRef O2DataProviderCreateWithFilename(const char *pathCString);
 O2DataProviderRef O2DataProviderRetain(O2DataProviderRef self);
@@ -58,6 +67,7 @@ size_t O2DataProviderGetBytesAtPosition(O2DataProviderRef self, void *buffer,
 size_t O2DataProviderGetBytes(O2DataProviderRef self, void *buffer,
                               size_t length);
 
+- (void) _o2MaterializeIfNeeded;
 - (NSInputStream *) inputStream;
 
 - (BOOL) isDirectAccess;

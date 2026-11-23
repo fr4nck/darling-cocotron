@@ -18,6 +18,29 @@ typedef off_t (*CGDataProviderSkipForwardCallback)(void* info, off_t count);
 typedef void (*CGDataProviderRewindCallback)(void* info);
 typedef void (*CGDataProviderReleaseInfoCallback)(void* info);
 
+/* Mac OS X 10.0-10.4 provider callbacks (deprecated in 10.5, still exported by the 10.6 CoreGraphics that
+   pre-10.5 binaries link against). Types as recorded by the PyObjC 2.5.1 Quartz bindings built against the
+   Apple SDK: four function pointers, no version field; DirectAccess takes a size_t size and offset. */
+typedef void (*CGDataProviderSkipBytesCallback)(void* info, size_t count);
+
+typedef struct CGDataProviderCallbacks {
+	CGDataProviderGetBytesCallback getBytes;
+	CGDataProviderSkipBytesCallback skipBytes;
+	CGDataProviderRewindCallback rewind;
+	CGDataProviderReleaseInfoCallback releaseProvider;
+} CGDataProviderCallbacks;
+
+typedef const void* (*CGDataProviderGetBytePointerCallback)(void* info);
+typedef void (*CGDataProviderReleaseBytePointerCallback)(void* info, const void* pointer);
+typedef size_t (*CGDataProviderGetBytesAtOffsetCallback)(void* info, void* buffer, size_t offset, size_t count);
+
+typedef struct CGDataProviderDirectAccessCallbacks {
+	CGDataProviderGetBytePointerCallback getBytePointer;
+	CGDataProviderReleaseBytePointerCallback releaseBytePointer;
+	CGDataProviderGetBytesAtOffsetCallback getBytes;
+	CGDataProviderReleaseInfoCallback releaseProvider;
+} CGDataProviderDirectAccessCallbacks;
+
 typedef struct CGDataProviderSequentialCallbacks {
 	unsigned int version;
 	CGDataProviderGetBytesCallback getBytes;
@@ -36,6 +59,10 @@ COREGRAPHICS_EXPORT CGDataProviderRef CGDataProviderCreateWithCFData(CFDataRef d
 COREGRAPHICS_EXPORT CGDataProviderRef CGDataProviderCreateWithData(void *info, const void *data, size_t size, CGDataProviderReleaseDataCallback releaseCallback);
 
 COREGRAPHICS_EXPORT CGDataProviderRef __nullable CGDataProviderCreateSequential(void* info, const CGDataProviderSequentialCallbacks* callbacks);
+
+COREGRAPHICS_EXPORT CGDataProviderRef __nullable CGDataProviderCreate(void* info, const CGDataProviderCallbacks* callbacks);
+
+COREGRAPHICS_EXPORT CGDataProviderRef __nullable CGDataProviderCreateDirectAccess(void* info, size_t size, const CGDataProviderDirectAccessCallbacks* callbacks);
 
 COREGRAPHICS_EXPORT CFDataRef CGDataProviderCopyData(CGDataProviderRef self);
 

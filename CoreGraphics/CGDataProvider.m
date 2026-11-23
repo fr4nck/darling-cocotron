@@ -42,3 +42,19 @@ CGDataProviderCreateWithData(void *info, const void *data, size_t size,
 COREGRAPHICS_EXPORT CFDataRef CGDataProviderCopyData(CGDataProviderRef self) {
     return (CFDataRef) O2DataProviderCopyData((O2DataProviderRef)self);
 }
+
+/* Mac OS X 10.0-10.4 callback providers (deprecated in 10.5, exported for pre-10.5 binaries). */
+COREGRAPHICS_EXPORT CGDataProviderRef CGDataProviderCreate(void *info, const CGDataProviderCallbacks *callbacks) {
+    if (callbacks == NULL)
+        return NULL;
+    return (CGDataProviderRef)O2DataProviderCreateWithSequentialCallbacks(info, callbacks->getBytes,
+            callbacks->skipBytes, callbacks->rewind, callbacks->releaseProvider);
+}
+
+COREGRAPHICS_EXPORT CGDataProviderRef CGDataProviderCreateDirectAccess(void *info, size_t size,
+        const CGDataProviderDirectAccessCallbacks *callbacks) {
+    if (callbacks == NULL)
+        return NULL;
+    return (CGDataProviderRef)O2DataProviderCreateWithDirectAccessCallbacks(info, size, callbacks->getBytePointer,
+            callbacks->releaseBytePointer, callbacks->getBytes, callbacks->releaseProvider);
+}
