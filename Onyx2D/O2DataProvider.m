@@ -207,6 +207,9 @@ CFDataRef O2DataProviderCopyData(O2DataProviderRef self) {
      so the provider never keeps a pointer into the client's buffer.
    - The read happens under a lock: concurrent first uses see either nothing yet (they wait) or the
      complete bytes, never a half-read provider. A callback re-entering its own provider gets no bytes.
+     The lock is held while the client callbacks run: a callback must not wait for another thread that
+     uses the same provider. If a callback raises, the lock is released, the partial buffer freed and
+     the provider stays unread (the exception reaches the caller; a later use reads again).
    - Allocation failures and the size limit are not fatal: the provider then has no bytes
      (CGDataProviderCopyData returns NULL, images built on it draw nothing).
    - releaseInfo runs exactly once, from -dealloc, whether or not the bytes were read. */
@@ -228,6 +231,8 @@ __attribute__((visibility("hidden")))
     size_t (*_cbGetBytesAtOffset)(void *, void *, size_t, size_t);
     void (*_cbReleaseInfo)(void *);
     pthread_mutex_t _cbLock;
+    uint8_t *_cbScratch;   // buffer being filled by the callbacks (freed if a callback raises)
+    BOOL _cbLockReady;
     BOOL _cbMaterialized;
     BOOL _cbReading;
 }
@@ -246,11 +251,13 @@ __attribute__((visibility("hidden")))
         buffer = malloc(capacity);
         if (buffer == NULL)
             return NULL;
+        _cbScratch = buffer;
         for (;;) {
             if (length == capacity) {
                 if (capacity >= O2_CALLBACK_PROVIDER_MAX_BYTES) {
                     NSLog(@"O2DataProvider: sequential provider larger than %zu bytes, no data", capacity);
                     free(buffer);
+                    _cbScratch = NULL;
                     return NULL;
                 }
                 size_t newCapacity = capacity * 2;
@@ -260,9 +267,11 @@ __attribute__((visibility("hidden")))
                 if (grown == NULL) {
                     NSLog(@"O2DataProvider: cannot grow a sequential provider to %zu bytes, no data", newCapacity);
                     free(buffer);
+                    _cbScratch = NULL;
                     return NULL;
                 }
                 buffer = grown;
+                _cbScratch = buffer;
                 capacity = newCapacity;
             }
             size_t n = _cbGetBytes(_cbInfo, buffer + length, capacity - length);
@@ -271,6 +280,7 @@ __attribute__((visibility("hidden")))
             if (n > capacity - length) {
                 NSLog(@"O2DataProvider: sequential getBytes returned more than requested, no data");
                 free(buffer);
+                _cbScratch = NULL;
                 return NULL;
             }
             length += n;
@@ -285,6 +295,7 @@ __attribute__((visibility("hidden")))
             NSLog(@"O2DataProvider: cannot allocate %zu bytes for a direct-access provider, no data", _cbSize);
             return NULL;
         }
+        _cbScratch = buffer;
         const void *pointer = (_cbGetBytePointer != NULL) ? _cbGetBytePointer(_cbInfo) : NULL;
         if (pointer != NULL) {
             memcpy(buffer, pointer, _cbSize);
@@ -299,6 +310,7 @@ __attribute__((visibility("hidden")))
                 if (n > _cbSize - length) {
                     NSLog(@"O2DataProvider: direct-access getBytes returned more than requested, no data");
                     free(buffer);
+                    _cbScratch = NULL;
                     return NULL;
                 }
                 length += n;
@@ -306,37 +318,51 @@ __attribute__((visibility("hidden")))
         } else {
             // getBytePointer returned NULL and there is no getBytes callback: no bytes available.
             free(buffer);
+            _cbScratch = NULL;
             return NULL;
         }
     }
+    _cbScratch = NULL;   // ownership passes to the caller
     *lengthOut = length;
     return buffer;
 }
 
 - (void) _o2MaterializeIfNeeded {
+    BOOL startedRead = NO;   // only the call that starts the read may clean it up (a nested call must not)
     pthread_mutex_lock(&_cbLock);
-    if (!_cbMaterialized && !_cbReading) {
-        _cbReading = YES;
-        size_t length = 0;
-        uint8_t *buffer = [self _o2ReadAll: &length];
-        NSData *data = nil;
-        if (buffer != NULL) {
-            data = [[NSData alloc] initWithBytesNoCopy: buffer length: length freeWhenDone: YES];
-            if (data == nil)
-                free(buffer);
+    @try {
+        if (!_cbMaterialized && !_cbReading) {
+            _cbReading = YES;
+            startedRead = YES;
+            size_t length = 0;
+            uint8_t *buffer = [self _o2ReadAll: &length];
+            NSData *data = nil;
+            if (buffer != NULL) {
+                data = [[NSData alloc] initWithBytesNoCopy: buffer length: length freeWhenDone: YES];
+                if (data == nil)
+                    free(buffer);
+            }
+            if (data != nil) {
+                _data = data;
+                _bytes = [data bytes];
+                _length = [data length];
+                _isDirectAccess = YES;
+                _inputStream = [[NSInputStream alloc] initWithData: data];   // owned, not autoreleased
+                [_inputStream open];
+            }
+            _cbReading = NO;
+            _cbMaterialized = YES;   // set only once the read is complete (or has definitively failed)
         }
-        if (data != nil) {
-            _data = data;
-            _bytes = [data bytes];
-            _length = [data length];
-            _isDirectAccess = YES;
-            _inputStream = [[NSInputStream alloc] initWithData: data];   // owned, not autoreleased
-            [_inputStream open];
+    } @finally {
+        if (startedRead && _cbReading) {
+            // A callback raised: drop the partial buffer, leave the provider unread (a later use reads
+            // again from the start) and let the exception reach the caller with the lock released.
+            free(_cbScratch);
+            _cbScratch = NULL;
+            _cbReading = NO;
         }
-        _cbReading = NO;
-        _cbMaterialized = YES;   // set only once the read is complete (or has definitively failed)
+        pthread_mutex_unlock(&_cbLock);
     }
-    pthread_mutex_unlock(&_cbLock);
 }
 
 - (BOOL) isDirectAccess {
@@ -381,7 +407,8 @@ __attribute__((visibility("hidden")))
     if (_cbReleaseInfo != NULL)
         _cbReleaseInfo(_cbInfo);
     _cbReleaseInfo = NULL;
-    pthread_mutex_destroy(&_cbLock);
+    if (_cbLockReady)
+        pthread_mutex_destroy(&_cbLock);
     [super dealloc];
 }
 
@@ -400,6 +427,7 @@ static O2DataProvider_callbacks *O2CallbackProviderAlloc(void) {
         return nil;
     }
     pthread_mutexattr_destroy(&attributes);
+    self->_cbLockReady = YES;
     return self;
 }
 
