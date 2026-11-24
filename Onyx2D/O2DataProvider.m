@@ -24,6 +24,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 #import <Foundation/NSValue.h>
 #import <Onyx2D/O2DataProvider.h>
 #import <string.h>
+#import <stdlib.h>
+#import <pthread.h>
+
+// Private: callback-backed providers read their bytes on first use (see the end of this file).
+@interface O2DataProvider ()
+- (void) _o2MaterializeIfNeeded;
+@end
 
 @implementation O2DataProvider
 
@@ -191,18 +198,23 @@ CFDataRef O2DataProviderCopyData(O2DataProviderRef self) {
 
 
 /* Callback-backed providers: CGDataProviderCreate (10.0-10.4 sequential callbacks) and
-   CGDataProviderCreateDirectAccess. A subclass keeps the O2DataProvider instance layout unchanged.
-   On the first request for bytes the provider reads everything once through the callbacks into an
-   NSData it owns, then behaves like a data provider (isDirectAccess, bytes, length, inputStream).
-   The sequential stream is rewound once before that read; skipBytes is never needed because the
-   whole stream is read (Quartz calls rewind/skip on demand, the client must not rely on either).
-   A byte pointer obtained from getBytePointer is copied and handed back with releaseBytePointer at
-   once, so the provider never keeps a pointer into the client's buffer. releaseInfo runs exactly once,
-   from -dealloc, whether or not the bytes were read. */
+   CGDataProviderCreateDirectAccess. A private subclass keeps the O2DataProvider instance layout unchanged.
+   On the first request for bytes the provider reads everything once through the callbacks into a buffer
+   it owns, then behaves like a data provider (isDirectAccess, bytes, length, inputStream).
+   - The sequential stream is rewound once before that read; skipBytes is never needed because the whole
+     stream is read (Quartz calls rewind/skip on demand, the client must not rely on either).
+   - A byte pointer obtained from getBytePointer is copied and handed back with releaseBytePointer at once,
+     so the provider never keeps a pointer into the client's buffer.
+   - The read happens under a lock: concurrent first uses see either nothing yet (they wait) or the
+     complete bytes, never a half-read provider. A callback re-entering its own provider gets no bytes.
+   - Allocation failures and the size limit are not fatal: the provider then has no bytes
+     (CGDataProviderCopyData returns NULL, images built on it draw nothing).
+   - releaseInfo runs exactly once, from -dealloc, whether or not the bytes were read. */
 #define O2_CALLBACK_PROVIDER_MAX_BYTES ((size_t) 1 << 30)
 
 enum { O2CallbackSequential = 1, O2CallbackDirectAccess = 2 };
 
+__attribute__((visibility("hidden")))
 @interface O2DataProvider_callbacks : O2DataProvider {
 @public   // file-private class: filled by the two C creators below
     int _cbMode;
@@ -215,91 +227,116 @@ enum { O2CallbackSequential = 1, O2CallbackDirectAccess = 2 };
     void (*_cbReleaseBytePointer)(void *, const void *);
     size_t (*_cbGetBytesAtOffset)(void *, void *, size_t, size_t);
     void (*_cbReleaseInfo)(void *);
+    pthread_mutex_t _cbLock;
     BOOL _cbMaterialized;
-    BOOL _cbFailed;
+    BOOL _cbReading;
 }
 @end
 
 @implementation O2DataProvider_callbacks
 
-- (void) _o2MaterializeIfNeeded {
-    if (_cbMaterialized)
-        return;
-    _cbMaterialized = YES;
-    NSMutableData *data = nil;
-
+// Reads the whole provider into a malloc'd buffer. Returns NULL (and frees everything) on failure.
+- (uint8_t *) _o2ReadAll: (size_t *) lengthOut {
+    uint8_t *buffer = NULL;
+    size_t length = 0;
     if (_cbMode == O2CallbackSequential) {
-        // The stream is read once, from its beginning: rewind first, as Quartz does when it
-        // needs to read from the beginning of the provider's data stream.
+        size_t capacity = 65536;
         if (_cbRewind != NULL)
             _cbRewind(_cbInfo);
-        data = [[NSMutableData alloc] init];
-        if (data == nil)
-            _cbFailed = YES;
-        uint8_t chunk[65536];
-        while (!_cbFailed) {
-            size_t n = _cbGetBytes(_cbInfo, chunk, sizeof(chunk));
+        buffer = malloc(capacity);
+        if (buffer == NULL)
+            return NULL;
+        for (;;) {
+            if (length == capacity) {
+                if (capacity >= O2_CALLBACK_PROVIDER_MAX_BYTES) {
+                    NSLog(@"O2DataProvider: sequential provider larger than %zu bytes, no data", capacity);
+                    free(buffer);
+                    return NULL;
+                }
+                size_t newCapacity = capacity * 2;
+                if (newCapacity > O2_CALLBACK_PROVIDER_MAX_BYTES)
+                    newCapacity = O2_CALLBACK_PROVIDER_MAX_BYTES;
+                uint8_t *grown = realloc(buffer, newCapacity);
+                if (grown == NULL) {
+                    NSLog(@"O2DataProvider: cannot grow a sequential provider to %zu bytes, no data", newCapacity);
+                    free(buffer);
+                    return NULL;
+                }
+                buffer = grown;
+                capacity = newCapacity;
+            }
+            size_t n = _cbGetBytes(_cbInfo, buffer + length, capacity - length);
             if (n == 0)
                 break;
-            if (n > sizeof(chunk) || [data length] + n > O2_CALLBACK_PROVIDER_MAX_BYTES) {
-                NSLog(@"O2DataProvider: sequential getBytes returned %zu bytes (limit exceeded), provider unusable", n);
-                _cbFailed = YES;
-                break;
+            if (n > capacity - length) {
+                NSLog(@"O2DataProvider: sequential getBytes returned more than requested, no data");
+                free(buffer);
+                return NULL;
             }
-            [data appendBytes: chunk length: n];
+            length += n;
         }
-    } else if (_cbMode == O2CallbackDirectAccess) {
+    } else {
         if (_cbSize > O2_CALLBACK_PROVIDER_MAX_BYTES) {
-            NSLog(@"O2DataProvider: direct-access size %zu exceeds the supported limit", _cbSize);
-            _cbFailed = YES;
-        } else {
-            const void *pointer = (_cbGetBytePointer != NULL) ? _cbGetBytePointer(_cbInfo) : NULL;
-            if (pointer != NULL) {
-                data = [[NSMutableData alloc] initWithBytes: pointer length: _cbSize];
-                if (_cbReleaseBytePointer != NULL)
-                    _cbReleaseBytePointer(_cbInfo, pointer);
-                if (data == nil)
-                    _cbFailed = YES;   // allocation failure: no bytes, never a pointer into freed client memory
-            } else if (_cbGetBytesAtOffset != NULL) {
-                data = [[NSMutableData alloc] initWithLength: _cbSize];
-                uint8_t *bytes = [data mutableBytes];
-                size_t offset = 0;
-                if (data == nil || (_cbSize > 0 && bytes == NULL)) {
-                    // allocation failure: never hand the client a NULL-based buffer
-                    NSLog(@"O2DataProvider: cannot allocate %zu bytes for a direct-access provider", _cbSize);
-                    _cbFailed = YES;
-                    offset = _cbSize;
+            NSLog(@"O2DataProvider: direct-access size %zu exceeds the supported limit, no data", _cbSize);
+            return NULL;
+        }
+        buffer = malloc(_cbSize > 0 ? _cbSize : 1);
+        if (buffer == NULL) {
+            NSLog(@"O2DataProvider: cannot allocate %zu bytes for a direct-access provider, no data", _cbSize);
+            return NULL;
+        }
+        const void *pointer = (_cbGetBytePointer != NULL) ? _cbGetBytePointer(_cbInfo) : NULL;
+        if (pointer != NULL) {
+            memcpy(buffer, pointer, _cbSize);
+            if (_cbReleaseBytePointer != NULL)
+                _cbReleaseBytePointer(_cbInfo, pointer);
+            length = _cbSize;
+        } else if (_cbGetBytesAtOffset != NULL) {
+            while (length < _cbSize) {
+                size_t n = _cbGetBytesAtOffset(_cbInfo, buffer + length, length, _cbSize - length);
+                if (n == 0)
+                    break;
+                if (n > _cbSize - length) {
+                    NSLog(@"O2DataProvider: direct-access getBytes returned more than requested, no data");
+                    free(buffer);
+                    return NULL;
                 }
-                while (!_cbFailed && offset < _cbSize) {
-                    size_t n = _cbGetBytesAtOffset(_cbInfo, bytes + offset, offset, _cbSize - offset);
-                    if (n == 0)
-                        break;
-                    if (n > _cbSize - offset) {
-                        NSLog(@"O2DataProvider: direct-access getBytes returned more than requested");
-                        _cbFailed = YES;
-                        break;
-                    }
-                    offset += n;
-                }
-                if (!_cbFailed && offset < _cbSize)
-                    [data setLength: offset];
-            } else {
-                // getBytePointer returned NULL and there is no getBytes callback: no bytes available.
-                _cbFailed = YES;
+                length += n;
             }
+        } else {
+            // getBytePointer returned NULL and there is no getBytes callback: no bytes available.
+            free(buffer);
+            return NULL;
         }
     }
+    *lengthOut = length;
+    return buffer;
+}
 
-    if (_cbFailed) {
-        [data release];
-        return;
+- (void) _o2MaterializeIfNeeded {
+    pthread_mutex_lock(&_cbLock);
+    if (!_cbMaterialized && !_cbReading) {
+        _cbReading = YES;
+        size_t length = 0;
+        uint8_t *buffer = [self _o2ReadAll: &length];
+        NSData *data = nil;
+        if (buffer != NULL) {
+            data = [[NSData alloc] initWithBytesNoCopy: buffer length: length freeWhenDone: YES];
+            if (data == nil)
+                free(buffer);
+        }
+        if (data != nil) {
+            _data = data;
+            _bytes = [data bytes];
+            _length = [data length];
+            _isDirectAccess = YES;
+            _inputStream = [[NSInputStream alloc] initWithData: data];   // owned, not autoreleased
+            [_inputStream open];
+        }
+        _cbReading = NO;
+        _cbMaterialized = YES;   // set only once the read is complete (or has definitively failed)
     }
-    _data = data;
-    _bytes = [data bytes];
-    _length = [data length];
-    _isDirectAccess = YES;
-    _inputStream = [[NSInputStream inputStreamWithData: data] retain];
-    [_inputStream open];
+    pthread_mutex_unlock(&_cbLock);
 }
 
 - (BOOL) isDirectAccess {
@@ -344,10 +381,27 @@ enum { O2CallbackSequential = 1, O2CallbackDirectAccess = 2 };
     if (_cbReleaseInfo != NULL)
         _cbReleaseInfo(_cbInfo);
     _cbReleaseInfo = NULL;
+    pthread_mutex_destroy(&_cbLock);
     [super dealloc];
 }
 
 @end
+
+static O2DataProvider_callbacks *O2CallbackProviderAlloc(void) {
+    O2DataProvider_callbacks *self = [[O2DataProvider_callbacks alloc] init];
+    if (self == nil)
+        return nil;
+    pthread_mutexattr_t attributes;
+    pthread_mutexattr_init(&attributes);
+    pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);   // a re-entering callback must not deadlock
+    if (pthread_mutex_init(&self->_cbLock, &attributes) != 0) {
+        pthread_mutexattr_destroy(&attributes);
+        [self release];
+        return nil;
+    }
+    pthread_mutexattr_destroy(&attributes);
+    return self;
+}
 
 O2DataProviderRef O2DataProviderCreateWithSequentialCallbacks(void *info,
         size_t (*getBytes)(void *, void *, size_t), void (*skipBytes)(void *, size_t),
@@ -355,7 +409,9 @@ O2DataProviderRef O2DataProviderCreateWithSequentialCallbacks(void *info,
 {
     if (getBytes == NULL)
         return NULL;
-    O2DataProvider_callbacks *self = [[O2DataProvider_callbacks alloc] init];
+    O2DataProvider_callbacks *self = O2CallbackProviderAlloc();
+    if (self == nil)
+        return NULL;
     self->_cbMode = O2CallbackSequential;
     self->_cbInfo = info;
     self->_cbGetBytes = getBytes;
@@ -371,7 +427,9 @@ O2DataProviderRef O2DataProviderCreateWithDirectAccessCallbacks(void *info, size
 {
     if (getBytePointer == NULL && getBytesAtOffset == NULL)
         return NULL;
-    O2DataProvider_callbacks *self = [[O2DataProvider_callbacks alloc] init];
+    O2DataProvider_callbacks *self = O2CallbackProviderAlloc();
+    if (self == nil)
+        return NULL;
     self->_cbMode = O2CallbackDirectAccess;
     self->_cbInfo = info;
     self->_cbSize = size;

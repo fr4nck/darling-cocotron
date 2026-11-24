@@ -67,7 +67,6 @@ size_t O2DataProviderGetBytesAtPosition(O2DataProviderRef self, void *buffer,
 size_t O2DataProviderGetBytes(O2DataProviderRef self, void *buffer,
                               size_t length);
 
-- (void) _o2MaterializeIfNeeded;
 - (NSInputStream *) inputStream;
 
 - (BOOL) isDirectAccess;
